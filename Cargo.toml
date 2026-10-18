@@ -1,0 +1,42 @@
+[package]
+name = "apalis-redb"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Background task processing for rust using apalis and redb"
+keywords = ["background", "jobs", "queue", "redb", "async"]
+categories = ["asynchronous", "database"]
+readme = "README.md"
+include = ["src/**", "Cargo.toml", "README.md"]
+
+[dependencies]
+apalis-codec = { version = "1.0.0", default-features = false, features = [
+    "json",
+] }
+apalis-core = { version = "1.0.0", features = ["sleep", "ulid", "serde"] }
+redb = "4.4.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3.34"
+futures-timer = "3.0.4"
+thiserror = "2.0.21"
+ulid = { version = "3", features = ["serde"] }
+tracing = { version = "0.1", default-features = false }
+tokio = { version = "1", features = ["rt"], optional = true }
+blocking = { version = "1.6", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.53.2", features = ["full"] }
+apalis = { version = "1.0.0", features = ["task-context"] }
+apalis-workflow = { version = "1.0.0" }
+apalis-codec = { version = "1.0.0", features = ["msgpack", "bincode"] }
+tempfile = "3"
+
+[features]
+default = ["tokio-comp"]
+## Run blocking redb transactions on the tokio blocking thread pool
+tokio-comp = ["dep:tokio"]
+## Run blocking redb transactions on the `blocking` thread pool (smol / async-std)
+smol-comp = ["dep:blocking"]
+## Renew leases for tracked tasks on heartbeat
+task-tracking = ["apalis-core/task-context"]
