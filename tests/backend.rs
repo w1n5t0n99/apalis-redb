@@ -342,6 +342,83 @@ async fn orphaned_tasks_are_reenqueued() {
     within(10, rescuer.run()).await.unwrap();
 }
 
+/// Simulates the whole application crashing: a worker claims a task and is
+/// dropped mid-task without shutting down, then the database is closed.
+async fn crash_while_running(path: &std::path::Path, config: &Config, name: &str) {
+    let conn = apalis_redb::connect(path).await.unwrap();
+    let mut backend = RedbStorage::<u32>::new(conn).with_config(config.clone());
+    backend.push(1).await.unwrap();
+
+    let started = Arc::new(tokio::sync::Notify::new());
+    let s = started.clone();
+    let worker = WorkerBuilder::new(name)
+        .backend(backend)
+        .build(move |_: u32| {
+            s.notify_one();
+            futures::future::pending::<()>()
+        });
+    let handle = tokio::spawn(worker.run());
+    within(10, started.notified()).await;
+    handle.abort();
+    let _ = handle.await;
+}
+
+/// Reopens the database once the crashed run has released it
+async fn reopen(path: &std::path::Path) -> Connection {
+    within(10, async {
+        loop {
+            match apalis_redb::connect(path).await {
+                Ok(conn) => return conn,
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    })
+    .await
+}
+
+/// After a crash, a worker restarted under the same name re-runs the task it
+/// held, once its last heartbeat is older than `heartbeat_interval`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_after_crash_recovers_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tasks.redb");
+    // Long orphan threshold, so only the same-name check can recover the task
+    let config = Config::default()
+        .queue("crash:recover")
+        .heartbeat_interval(Duration::from_secs(1))
+        .missed_heartbeats(1000);
+    crash_while_running(&path, &config, "crash-worker").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let conn = reopen(&path).await;
+    let backend = RedbStorage::<u32>::new(conn).with_config(config);
+    let worker = WorkerBuilder::new("crash-worker").backend(backend).build(
+        |task: u32, wrk: WorkerContext| async move {
+            assert_eq!(task, 1);
+            wrk.stop().unwrap();
+        },
+    );
+    within(10, worker.run()).await.unwrap();
+}
+
+/// Restarting under the same name before `heartbeat_interval` has passed fails,
+/// because the crashed worker's record still looks alive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn immediate_restart_after_crash_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tasks.redb");
+    let config = Config::default().queue("crash:immediate");
+    crash_while_running(&path, &config, "crash-worker").await;
+
+    let conn = reopen(&path).await;
+    let backend = RedbStorage::<u32>::new(conn).with_config(config);
+    let worker = WorkerBuilder::new("crash-worker")
+        .backend(backend)
+        .build(|_: u32| async {});
+    let err = within(10, worker.run()).await.unwrap_err();
+    assert!(err.to_string().contains("WorkerAlreadyExists"), "{err}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inspection_apis() {
     let (_dir, conn) = setup().await;

@@ -149,6 +149,15 @@ async fn main() {
 }
 ```
 
+### More examples
+
+The [`examples`](https://github.com/w1n5t0n99/apalis-redb/tree/main/examples) folder has runnable
+versions of these and more, such as DAG workflows, named queues, idempotency keys and vacuuming:
+
+```bash
+cargo run --example basic
+```
+
 ## Durability
 
 By default every commit is flushed to disk before it returns. That is safe, but each commit pays for
@@ -178,6 +187,25 @@ orphaned tasks and vacuum. Worker registration, heartbeats and shutdown always c
 As a rough guide, 1000 single pushes took about 507ms with `Immediate` and about 44ms with `None`
 (one release-build run on WSL2). To cut the per-commit cost while staying fully durable, push in
 batches with `push_bulk` or `push_stream`, which commit once per batch.
+
+## Crash recovery
+
+Every task a worker claims is recorded against that worker in the database, along with the worker's
+last heartbeat. Nothing is lost when the application crashes: the tasks a worker held go back on the
+queue once the worker is known to be dead.
+
+- **Clean shutdown:** a stopping worker returns the tasks it holds to the queue before it exits.
+- **Restart with the same worker name:** on startup the worker re-enqueues the tasks its previous run
+  held, as long as that run's last heartbeat is more than one `heartbeat_interval` (30s by default) old.
+  Within that window the old record still looks alive and `worker.run()` fails with
+  `Error::WorkerAlreadyExists`. Restart crashed processes after a delay of at least `heartbeat_interval`
+  (for example `RestartSec=30` under systemd), or retry `run()` on that error.
+- **Workers with new names:** a running worker re-enqueues the tasks of any worker that has missed its
+  heartbeats for `heartbeat_interval × missed_heartbeats` (5 minutes by default).
+
+Recovery is at-least-once: a task that was running when the process died runs again, so handlers
+should be safe to repeat. With `Durability::None` a crash can also lose recent commits; see
+[Durability](#durability).
 
 ## Differences from `apalis-redis`
 
