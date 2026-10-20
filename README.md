@@ -216,6 +216,9 @@ should be safe to repeat. With `Durability::None` a crash can also lose recent c
 - Pub/sub events are replaced by in-process wakeups (`Config::emit_events`), since redb is embedded.
   Every storage sharing a `Connection` wakes the others' workers.
 - Retries honour each task's `max_attempts` (default `25`) rather than a fixed limit.
+- redb has no key expiry, so idempotency keys with a TTL are also indexed by expiry time in a
+  `{queue}:idempotency_expiry` table, and each push deletes up to 100 expired keys. A sub-second
+  `idempotency_ttl` rounds up to one second, where apalis-redis rounds it down.
 - Commit durability is configurable with `Config::durability`; see [Durability](#durability).
 - redb transactions are blocking, so they run on the tokio blocking pool (`tokio-comp`, default) or the
   `blocking` pool (`smol-comp`).

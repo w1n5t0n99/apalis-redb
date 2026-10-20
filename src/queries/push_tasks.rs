@@ -12,10 +12,15 @@ use crate::{
     },
 };
 
+/// The most expired idempotency keys one push deletes, so a large backlog
+/// is cleared over several pushes instead of slowing down one
+const MAX_EXPIRED_KEYS_PER_PUSH: usize = 100;
+
 /// Pushes tasks to redb in a single transaction.
 ///
 /// Returns the number of tasks `(enqueued, scheduled)`. Tasks whose id or
-/// idempotency key already exists are skipped.
+/// unexpired idempotency key already exists are skipped. The transaction also
+/// deletes up to [`MAX_EXPIRED_KEYS_PER_PUSH`] expired idempotency keys.
 pub async fn push_tasks(
     conn: &Connection,
     config: &Config,
@@ -42,15 +47,23 @@ fn push_tasks_txn(
     let active_name = config.active_jobs_list();
     let scheduled_name = config.scheduled_jobs_set();
     let idem_name = config.idempotency_key_set();
+    let expiry_name = config.idempotency_expiry_set();
 
     let mut data = txn.open_table(tables::data(&data_name))?;
     let mut meta = txn.open_table(tables::meta(&meta_name))?;
     let mut active = txn.open_table(tables::active(&active_name))?;
     let mut scheduled = txn.open_table(tables::timeline(&scheduled_name))?;
     let mut idempotency = txn.open_table(tables::idempotency(&idem_name))?;
+    let mut expiry = txn.open_table(tables::timeline(&expiry_name))?;
 
     let now = current_timestamp();
-    let ttl = config.idempotency_ttl.map(|d| d.as_secs()).unwrap_or(0);
+    remove_expired_keys(&mut idempotency, &mut expiry, now)?;
+
+    // Round up so a sub-second TTL doesn't become 0, which means "never expires"
+    let ttl = config
+        .idempotency_ttl
+        .map(|d| d.as_secs() + u64::from(d.subsec_nanos() > 0))
+        .unwrap_or(0);
     let mut enqueued = 0;
     let mut newly_scheduled = 0;
 
@@ -69,7 +82,15 @@ fn push_tasks_txn(
                 continue;
             }
             let expires_at = if ttl > 0 { now + ttl } else { 0 };
-            idempotency.insert(key, (task_id.as_str(), expires_at))?;
+            let previous = idempotency
+                .insert(key, (task_id.as_str(), expires_at))?
+                .map(|v| v.value().1);
+            if let Some(previous) = previous.filter(|&at| at != 0) {
+                expiry.remove((previous, key))?;
+            }
+            if expires_at != 0 {
+                expiry.insert((expires_at, key), ())?;
+            }
         }
 
         if data.get(task_id.as_str())?.is_some() {
@@ -111,4 +132,29 @@ fn push_tasks_txn(
     }
 
     Ok((enqueued, newly_scheduled))
+}
+
+/// Deletes idempotency keys that expired at or before `now`, oldest first
+fn remove_expired_keys(
+    idempotency: &mut redb::Table<'_, &'static str, (&'static str, u64)>,
+    expiry: &mut redb::Table<'_, (u64, &'static str), ()>,
+    now: u64,
+) -> Result<(), Error> {
+    let mut expired = Vec::new();
+    for entry in expiry
+        .range(..(now + 1, ""))?
+        .take(MAX_EXPIRED_KEYS_PER_PUSH)
+    {
+        let (key, _) = entry?;
+        let (expires_at, key) = key.value();
+        expired.push((expires_at, key.to_owned()));
+    }
+    for (expires_at, key) in &expired {
+        expiry.remove((*expires_at, key.as_str()))?;
+        let current = idempotency.get(key.as_str())?.map(|v| v.value().1);
+        if current == Some(*expires_at) {
+            idempotency.remove(key.as_str())?;
+        }
+    }
+    Ok(())
 }

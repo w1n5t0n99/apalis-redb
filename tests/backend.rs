@@ -284,6 +284,76 @@ async fn idempotency_key_prevents_duplicates() {
     assert_eq!(tasks.len(), 1);
 }
 
+/// Returns the idempotency keys and expiry index entries stored for `queue`
+fn idempotency_tables(conn: &Connection, queue: &str) -> (Vec<String>, Vec<(u64, String)>) {
+    use redb::{ReadableDatabase, ReadableTable, TableDefinition};
+
+    let keys_name = format!("{queue}:idempotency");
+    let expiry_name = format!("{queue}:idempotency_expiry");
+    let keys_def: TableDefinition<&str, (&str, u64)> = TableDefinition::new(&keys_name);
+    let expiry_def: TableDefinition<(u64, &str), ()> = TableDefinition::new(&expiry_name);
+    let txn = conn.database().begin_read().unwrap();
+    let keys = txn
+        .open_table(keys_def)
+        .unwrap()
+        .iter()
+        .unwrap()
+        .map(|e| e.unwrap().0.value().to_owned())
+        .collect();
+    let expiry = txn
+        .open_table(expiry_def)
+        .unwrap()
+        .iter()
+        .unwrap()
+        .map(|e| {
+            let (entry, _) = e.unwrap();
+            let (at, key) = entry.value();
+            (at, key.to_owned())
+        })
+        .collect();
+    (keys, expiry)
+}
+
+/// Expired idempotency keys can be reused and are deleted by a later push.
+/// A sub-second TTL rounds up to one second instead of never expiring.
+#[tokio::test]
+async fn expired_idempotency_keys_are_removed() {
+    let (_dir, conn) = setup().await;
+    let queue = "idem_ttl:queue";
+    let config = Config::default()
+        .queue(queue)
+        .idempotency_ttl(Some(Duration::from_millis(500)));
+    let mut backend = RedbStorage::<u32>::new(conn.clone()).with_config(config);
+    let push = |key: &'static str| TaskBuilder::new(1).idempotency_key(key).build();
+
+    backend.push_task(push("old")).await.unwrap();
+    backend.push_task(push("reused")).await.unwrap();
+    backend.push_task(push("reused")).await.unwrap();
+    let (keys, expiry) = idempotency_tables(&conn, queue);
+    assert_eq!(keys, ["old", "reused"]);
+    assert_eq!(expiry.len(), 2);
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Reclaiming an expired key replaces its index entry, and the push
+    // deletes the other expired key
+    backend.push_task(push("reused")).await.unwrap();
+    let (keys, expiry) = idempotency_tables(&conn, queue);
+    assert_eq!(keys, ["reused"]);
+    assert_eq!(expiry.len(), 1);
+    assert_eq!(expiry[0].1, "reused");
+
+    let tasks = backend
+        .list_tasks(&Filter {
+            status: None,
+            page: 1,
+            page_size: Some(10),
+        })
+        .await
+        .unwrap();
+    assert_eq!(tasks.len(), 3);
+}
+
 /// Tasks survive closing and reopening the database.
 #[tokio::test]
 async fn tasks_persist_across_reopen() {

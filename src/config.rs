@@ -13,6 +13,7 @@ const TASK_DATA_HASH: &str = "{queue}:data";
 const JOB_META_HASH: &str = "{queue}:meta";
 const SCHEDULED_TASKS_SET: &str = "{queue}:scheduled";
 const IDEMPOTENCY_KEY_SET: &str = "{queue}:idempotency";
+const IDEMPOTENCY_EXPIRY_SET: &str = "{queue}:idempotency_expiry";
 
 /// Configuration for a worker's queue, batching, and liveness detection.
 ///
@@ -390,5 +391,12 @@ impl Config {
     /// Returns the redb table holding idempotency keys preventing duplicates.
     pub fn idempotency_key_set(&self) -> String {
         IDEMPOTENCY_KEY_SET.replace("{queue}", self.queue.as_ref())
+    }
+
+    /// Returns the redb table indexing idempotency keys by expiry time.
+    ///
+    /// apalis-redis has no equivalent, since Redis expires keys itself.
+    pub(crate) fn idempotency_expiry_set(&self) -> String {
+        IDEMPOTENCY_EXPIRY_SET.replace("{queue}", self.queue.as_ref())
     }
 }
