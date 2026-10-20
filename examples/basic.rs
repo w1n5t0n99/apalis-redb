@@ -10,13 +10,16 @@ async fn main() {
     let conn = apalis_redb::connect(dir.path().join("tasks.redb"))
         .await
         .unwrap();
+
     let config = Config::default()
         .queue("redb_basic_worker")
         .heartbeat_interval(Duration::from_secs(1))
         .lock_tasks(false)
         .batch_size(100);
+
     let mut backend = RedbStorage::new(conn).with_config(config);
     backend.push(42).await.unwrap();
+
     async fn task(task: u32, wrk: WorkerContext) -> Result<(), BoxDynError> {
         let handle = std::thread::current();
         println!("{task:?}, Thread: {:?}", handle.id());
