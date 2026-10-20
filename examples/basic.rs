@@ -17,9 +17,9 @@ async fn main() {
         .batch_size(100);
     let mut backend = RedbStorage::new(conn).with_config(config);
     backend.push(42).await.unwrap();
-    async fn task(task: u32, ctx: TaskContext, wrk: WorkerContext) -> Result<(), BoxDynError> {
+    async fn task(task: u32, wrk: WorkerContext) -> Result<(), BoxDynError> {
         let handle = std::thread::current();
-        println!("{task:?}, {ctx:?}, Thread: {:?}", handle.id());
+        println!("{task:?}, Thread: {:?}", handle.id());
         wrk.stop().unwrap();
         Ok(())
     }
