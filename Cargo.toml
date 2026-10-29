@@ -1,6 +1,6 @@
 [package]
 name = "apalis-redb"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/w1n5t0n99/apalis-redb"
