@@ -15,7 +15,7 @@ Background task processing for rust using `apalis` and [`redb`](https://github.c
 Add the latest versions from crates.io:
 
 ```toml
-apalis = { version = "1", features = ["retry"] }
+apalis = { version = "1" }
 apalis-redb = { version = "0.1" }
 ```
 

@@ -3,6 +3,7 @@ name = "apalis-redb"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/w1n5t0n99/apalis-redb"
 description = "Background task processing for rust using apalis and redb"
 keywords = ["background", "jobs", "queue", "redb", "async"]
 categories = ["asynchronous", "database"]
